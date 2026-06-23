@@ -242,12 +242,12 @@ def compile_pdf_report(product, country, data):
     return pdf_bytes
 
 # ==========================================
-# 4. 智能大脑：Gemini 市场结构化扫描器
+# 4. 智能大脑：Gemini 市场结构化扫描器 (支持模型选择与自适应降级)
 # ==========================================
-def call_gemini_analysis(product, country):
+def call_gemini_analysis(product, country, model_name="gemini-1.5-flash"):
     """
-    【升级版】开启 Google Search Grounding 的智能分析引擎
-    Gemini 收到请求后，会自动实时调用谷歌搜索获取最新数据，再生成精准报告。
+    【自适应升级版】开启 Google Search Grounding 的智能分析引擎
+    支持指定模型，如 gemini-1.5-flash 或 gemini-2.0-flash 或自定义 2026 最新版模型。
     """
     # 验证并配置 API Key
     api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
@@ -256,10 +256,10 @@ def call_gemini_analysis(product, country):
     else:
         genai.configure(api_key=api_key)
 
-    # 核心修正：在 google-generativeai SDK 中，启用 Google 搜索接地的正确字符串名称是 "google_search_retrieval"
+    # 在 SDK 中启用谷歌接地的标准工具名为 "google_search_retrieval"
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-pro",
-        tools="google_search_retrieval"  # 已经修正为 SDK 官方支持的标准接地工具名！
+        model_name=model_name,
+        tools="google_search_retrieval"
     )
     
     prompt = f"""
@@ -336,22 +336,54 @@ col1, col2 = st.columns([1, 2])
 with col1:
     st.header("🔍 新建市场分析")
     
+    # 增加模型选择与自定义输入，完全适配 2026 最新模型生态 (Gemini 2.0 / 2.5 / 1.5)
+    st.info("💡 **提示：** 404报错通常是因为您的 API Key 在当前地区或账户等级下没有 gemini-1.5-pro 的访问权限。建议在下方选择 `gemini-1.5-flash` (速度最快、免费额度最广且完美支持搜索接地)！")
+    
     with st.form("analysis_form"):
         product_input = st.text_input("产品中文名称：", value="狗床", help="例如：狗床、猫爬架、喂食器等")
         country_select = st.selectbox(
             "选择亚马逊目的国商城：",
             ["德国 (Amazon DE)", "美国 (Amazon US)", "日本 (Amazon JP)", "英国 (Amazon UK)", "法国 (Amazon FR)", "意大利 (Amazon IT)"]
         )
+        
+        # 允许用户自主选择模型，并支持文本框自定义，预防未来的新型模型
+        model_option = st.selectbox(
+            "选择 Gemini 驱动模型：",
+            [
+                "gemini-1.5-flash (⭐ 极速推荐，完美支持搜索且不易报错)",
+                "gemini-1.5-pro (深度分析，对API Key等极要求高)",
+                "gemini-2.0-flash (次世代推荐)",
+                "手动输入最新模型ID (如 gemini-2.5-flash / gemini-3.1-flash)"
+            ]
+        )
+        
+        custom_model_input = st.text_input(
+            "手动输入最新模型ID（仅在上方选择“手动输入”时生效）：", 
+            value="gemini-1.5-flash",
+            help="当 2026 年底或未来有更新的版本发布时，可以直接在此处填入最新 ID"
+        )
+        
         submit_btn = st.form_submit_button("📊 运行智能分析 & 生成PDF")
         
+    # 解析最终要调用的模型名称
+    final_model = "gemini-1.5-flash"
+    if "gemini-1.5-flash" in model_option:
+        final_model = "gemini-1.5-flash"
+    elif "gemini-1.5-pro" in model_option:
+        final_model = "gemini-1.5-pro"
+    elif "gemini-2.0-flash" in model_option:
+        final_model = "gemini-2.0-flash"
+    else:
+        final_model = custom_model_input.strip()
+
     if submit_btn:
         if not product_input:
             st.error("请输入产品中文名称！")
         else:
-            with st.spinner("🚀 正在抓取多节点BSR，扫描评论动量并运行 SoV AI 分析中...请耐心等待"):
+            with st.spinner(f"🚀 正在使用模型 【{final_model}】 抓取多节点BSR，扫描评论动量并运行 SoV AI 分析中...请耐心等待"):
                 try:
                     # 1. 调用 Gemini 生成分析数据
-                    report_data = call_gemini_analysis(product_input, country_select)
+                    report_data = call_gemini_analysis(product_input, country_select, model_name=final_model)
                     
                     # 2. 编译生成 PDF 二进制文件
                     pdf_bytes = compile_pdf_report(product_input, country_select, report_data)
@@ -376,7 +408,19 @@ with col1:
                         mime="application/pdf"
                     )
                 except Exception as e:
-                    st.error(f"分析失败，请检查您的 Gemini Key 配置或重试。错误原因: {e}")
+                    error_msg = str(e)
+                    st.error(f"分析失败！\n\n**详细错误原因：** {error_msg}")
+                    
+                    # 友好提示与智能降级建议
+                    if "404" in error_msg or "not found" in error_msg:
+                        st.warning("""
+                        ⚠️ **诊断建议 (404 错误)：**
+                        您当前的 API Key 在当前地区很可能**没有开通该模型**（如 `gemini-1.5-pro`）的权限。
+                        
+                        **请尝试以下操作解决：**
+                        1. 在上方“选择 Gemini 驱动模型”下拉菜单中切换到 **`gemini-1.5-flash`**。这是兼容性最广、任何免费账户均开箱即用的官方标准推荐模型！
+                        2. 确认您的 API 密钥是否输入正确或过期。
+                        """)
 
 with col2:
     st.header("🗂️ 历史分析报告归档（随时下载）")
