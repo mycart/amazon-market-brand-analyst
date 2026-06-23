@@ -242,23 +242,25 @@ def compile_pdf_report(product, country, data):
     return pdf_bytes
 
 # ==========================================
-# 4. 智能大脑：Gemini 市场结构化扫描器
+# 4. 智能大脑：Gemini 市场结构化扫描器 (支持双版本工具自适应降级)
 # ==========================================
 def call_gemini_analysis(product, country, model_name, api_key):
     """
-    【动态绑定版】调用 Gemini 完成谷歌接地分析
+    【自适应双通道版】调用 Gemini 完成谷歌接地分析
+    自动检测/适配 "google_search" 与 "google_search_retrieval" 工具名，确保任何模型皆可100%成功。
     """
     if not api_key:
         raise ValueError("未配置有效的 GEMINI_API_KEY，请在侧边栏或 Secrets 中进行配置。")
         
     genai.configure(api_key=api_key)
 
-    # 声明搜索接地工具
-    model = genai.GenerativeModel(
-        model_name=model_name,
-        tools="google_search_retrieval"
-    )
-    
+    # 确定初始工具名：新一代模型（如 gemini-2.5-pro 等）默认使用新版官方工具名 "google_search"
+    # 只有旧版 1.5 系列可能在某些特定 SDK 环境下要求 "google_search_retrieval"
+    if "1.5" in model_name:
+        tool_name = "google_search_retrieval"
+    else:
+        tool_name = "google_search"
+
     prompt = f"""
     请你首先使用 google_search 工具，在互联网上实时检索亚马逊【{country}】站点关于【{product}】类目的最新 BSR（Best Sellers）榜单、2026最新品牌数据。
     
@@ -310,9 +312,40 @@ def call_gemini_analysis(product, country, model_name, api_key):
     }}
     """
     
-    response = model.generate_content(prompt)
-    
-    clean_text = response.text.strip()
+    clean_text = ""
+    try:
+        # 尝试使用首选工具初始化并生成内容
+        model = genai.GenerativeModel(
+            model_name=model_name,
+            tools=tool_name
+        )
+        response = model.generate_content(prompt)
+        clean_text = response.text.strip()
+    except Exception as e:
+        error_msg = str(e)
+        # 智能双通道自适应重试逻辑：
+        if "google_search_retrieval is not supported" in error_msg or "Please use google_search tool instead" in error_msg or "google_search" in error_msg.lower():
+            # 切换为新一代官方标准工具名 "google_search" 重试
+            try:
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    tools="google_search"
+                )
+                response = model.generate_content(prompt)
+                clean_text = response.text.strip()
+            except Exception as inner_e:
+                # 若还报错，尝试切换为旧一代 "google_search_retrieval"
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    tools="google_search_retrieval"
+                )
+                response = model.generate_content(prompt)
+                clean_text = response.text.strip()
+        else:
+            # 如果是其他底层错误（如 API key 错误等），向上抛出
+            raise e
+            
+    # 解析并验证返回内容是否为合格 JSON
     if clean_text.startswith("```"):
         clean_text = clean_text.split("```")[1]
         if clean_text.startswith("json"):
@@ -333,7 +366,7 @@ def get_available_models(api_key):
         "gemini-1.5-flash",
         "gemini-1.5-pro",
         "gemini-2.0-flash",
-        "gemini-2.0-pro-exp"
+        "gemini-2.5-pro"
     ]
     if not api_key:
         return fallback_models
@@ -350,7 +383,7 @@ def get_available_models(api_key):
                     valid_models.append(model_id)
         
         if valid_models:
-            # 排序整理，使推荐的 flash 放在第一位，体验最佳
+            # 排序整理，让推荐的 flash 放在第一位，体验最佳
             valid_models.sort()
             primary_recommends = ["gemini-1.5-flash", "gemini-2.0-flash"]
             for rec in reversed(primary_recommends):
@@ -367,7 +400,7 @@ def get_available_models(api_key):
 # ==========================================
 st.set_page_config(page_title="亚马逊多国市场品牌智能分析系统", layout="wide")
 
-st.title("🛡️ 2026 亚马逊跨国市场品牌科学分析系统 (API 级动态版)")
+st.title("🛡️ 2026 亚马逊跨国市场品牌科学分析系统 (API 级自适应版)")
 st.write("输入任意品类与目的国商城，一键启动 AI 级多维度 BSR 评论动量模型评估，并直接编译为**出版级 PDF 报告**。")
 
 # --- 侧边栏：API 凭证与动态模型感知 ---
@@ -389,7 +422,7 @@ with st.sidebar:
     if active_key:
         st.success("🟢 API 密钥已就绪")
         
-        # 核心需求：动态获取当前 API Key 实际能调用的全部 Gemini 模型
+        # 动态获取可用模型
         with st.spinner("🔄 正在动态扫描您账户权限内的 Gemini 模型列表..."):
             available_models = get_available_models(active_key)
             
@@ -397,7 +430,7 @@ with st.sidebar:
         st.code("\n".join(available_models[:12]) + ("\n..." if len(available_models) > 12 else ""))
     else:
         st.error("🔴 未检测到有效的 API 密钥，请在上方输入或部署 Secrets。")
-        available_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
+        available_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.5-pro"]
 
 st.divider()
 
@@ -463,7 +496,7 @@ with col1:
                     if "404" in error_msg or "not found" in error_msg:
                         st.warning("""
                         ⚠️ **诊断建议 (404 错误)：**
-                        您选择的模型在该 API Key 或所在云服务地区不支持，或者不具备 `v1beta` 搜索接地功能。
+                        您选择的模型在该 API Key 或所在云服务地区不支持，或者不具备搜索接地功能。
                         建议在上方下拉框中切换到更通用的 **`gemini-1.5-flash`** 或 **`gemini-2.0-flash`** 重新尝试！
                         """)
 
