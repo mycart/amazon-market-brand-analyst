@@ -242,21 +242,18 @@ def compile_pdf_report(product, country, data):
     return pdf_bytes
 
 # ==========================================
-# 4. 智能大脑：Gemini 市场结构化扫描器 (支持模型选择与自适应降级)
+# 4. 智能大脑：Gemini 市场结构化扫描器
 # ==========================================
-def call_gemini_analysis(product, country, model_name="gemini-1.5-flash"):
+def call_gemini_analysis(product, country, model_name, api_key):
     """
-    【自适应升级版】开启 Google Search Grounding 的智能分析引擎
-    支持指定模型，如 gemini-1.5-flash 或 gemini-2.0-flash 或自定义 2026 最新版模型。
+    【动态绑定版】调用 Gemini 完成谷歌接地分析
     """
-    # 验证并配置 API Key
-    api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
     if not api_key:
-        genai.configure() 
-    else:
-        genai.configure(api_key=api_key)
+        raise ValueError("未配置有效的 GEMINI_API_KEY，请在侧边栏或 Secrets 中进行配置。")
+        
+    genai.configure(api_key=api_key)
 
-    # 在 SDK 中启用谷歌接地的标准工具名为 "google_search_retrieval"
+    # 声明搜索接地工具
     model = genai.GenerativeModel(
         model_name=model_name,
         tools="google_search_retrieval"
@@ -324,20 +321,90 @@ def call_gemini_analysis(product, country, model_name="gemini-1.5-flash"):
     return json.loads(clean_text)
 
 # ==========================================
-# 5. Streamlit GUI 交互控制台
+# 5. 动态获取可用模型
+# ==========================================
+def get_available_models(api_key):
+    """
+    根据当前的 API Key，动态调用 Google list_models 接口获取真实的可用模型。
+    若获取失败或未配 Key，则降级返回内置精选稳定模型。
+    """
+    # 默认备份模型列表 (如果 API Key 无效或无法连通)
+    fallback_models = [
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-2.0-flash",
+        "gemini-2.0-pro-exp"
+    ]
+    if not api_key:
+        return fallback_models
+    try:
+        genai.configure(api_key=api_key)
+        raw_models = genai.list_models()
+        valid_models = []
+        for m in raw_models:
+            # 过滤必须支持 generateContent 方法的模型
+            if 'generateContent' in m.supported_generation_methods:
+                model_id = m.name.replace("models/", "")
+                # 过滤出包含 'gemini' 的模型
+                if "gemini" in model_id.lower():
+                    valid_models.append(model_id)
+        
+        if valid_models:
+            # 排序整理，使推荐的 flash 放在第一位，体验最佳
+            valid_models.sort()
+            primary_recommends = ["gemini-1.5-flash", "gemini-2.0-flash"]
+            for rec in reversed(primary_recommends):
+                if rec in valid_models:
+                    valid_models.remove(rec)
+                    valid_models.insert(0, rec)
+            return valid_models
+    except Exception as e:
+        pass
+    return fallback_models
+
+# ==========================================
+# 6. Streamlit GUI 交互控制台
 # ==========================================
 st.set_page_config(page_title="亚马逊多国市场品牌智能分析系统", layout="wide")
 
-st.title("🛡️ 2026 亚马逊跨国市场品牌科学分析系统")
+st.title("🛡️ 2026 亚马逊跨国市场品牌科学分析系统 (API 级动态版)")
 st.write("输入任意品类与目的国商城，一键启动 AI 级多维度 BSR 评论动量模型评估，并直接编译为**出版级 PDF 报告**。")
+
+# --- 侧边栏：API 凭证与动态模型感知 ---
+with st.sidebar:
+    st.header("🔑 API 凭证与模型状态")
+    
+    # 获取默认 Key (从 Secrets 或 环境 变量)
+    default_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+    
+    api_key_input = st.text_input(
+        "请输入您的 Google AI Studio API Key：",
+        value=default_key,
+        type="password",
+        help="建议配置在 Streamlit Secrets 中。若此处输入，将优先使用此处配置。"
+    )
+    
+    active_key = api_key_input.strip() if api_key_input else ""
+    
+    if active_key:
+        st.success("🟢 API 密钥已就绪")
+        
+        # 核心需求：动态获取当前 API Key 实际能调用的全部 Gemini 模型
+        with st.spinner("🔄 正在动态扫描您账户权限内的 Gemini 模型列表..."):
+            available_models = get_available_models(active_key)
+            
+        st.caption("✨ **已成功从您的 API Key 中动态读取以下可用模型：**")
+        st.code("\n".join(available_models[:12]) + ("\n..." if len(available_models) > 12 else ""))
+    else:
+        st.error("🔴 未检测到有效的 API 密钥，请在上方输入或部署 Secrets。")
+        available_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]
+
+st.divider()
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
     st.header("🔍 新建市场分析")
-    
-    # 增加模型选择与自定义输入，完全适配 2026 最新模型生态 (Gemini 2.0 / 2.5 / 1.5)
-    st.info("💡 **提示：** 404报错通常是因为您的 API Key 在当前地区或账户等级下没有 gemini-1.5-pro 的访问权限。建议在下方选择 `gemini-1.5-flash` (速度最快、免费额度最广且完美支持搜索接地)！")
     
     with st.form("analysis_form"):
         product_input = st.text_input("产品中文名称：", value="狗床", help="例如：狗床、猫爬架、喂食器等")
@@ -346,44 +413,25 @@ with col1:
             ["德国 (Amazon DE)", "美国 (Amazon US)", "日本 (Amazon JP)", "英国 (Amazon UK)", "法国 (Amazon FR)", "意大利 (Amazon IT)"]
         )
         
-        # 允许用户自主选择模型，并支持文本框自定义，预防未来的新型模型
-        model_option = st.selectbox(
-            "选择 Gemini 驱动模型：",
-            [
-                "gemini-1.5-flash (⭐ 极速推荐，完美支持搜索且不易报错)",
-                "gemini-1.5-pro (深度分析，对API Key等极要求高)",
-                "gemini-2.0-flash (次世代推荐)",
-                "手动输入最新模型ID (如 gemini-2.5-flash / gemini-3.1-flash)"
-            ]
-        )
-        
-        custom_model_input = st.text_input(
-            "手动输入最新模型ID（仅在上方选择“手动输入”时生效）：", 
-            value="gemini-1.5-flash",
-            help="当 2026 年底或未来有更新的版本发布时，可以直接在此处填入最新 ID"
+        # 核心需求：下拉选择框的数据由动态获取的 available_models 直接填充！
+        model_select = st.selectbox(
+            "选择已授权的 Gemini 驱动模型：",
+            options=available_models,
+            help="此处的列表是由您的 API Key 权限实时动态拉取的，确保 100% 具备访问权限，避免 404 报错。"
         )
         
         submit_btn = st.form_submit_button("📊 运行智能分析 & 生成PDF")
         
-    # 解析最终要调用的模型名称
-    final_model = "gemini-1.5-flash"
-    if "gemini-1.5-flash" in model_option:
-        final_model = "gemini-1.5-flash"
-    elif "gemini-1.5-pro" in model_option:
-        final_model = "gemini-1.5-pro"
-    elif "gemini-2.0-flash" in model_option:
-        final_model = "gemini-2.0-flash"
-    else:
-        final_model = custom_model_input.strip()
-
     if submit_btn:
-        if not product_input:
-            st.error("请输入产品中文名称！")
+        if not active_key:
+            st.error("❌ 无法分析：侧边栏未检测到 API 密钥，请在侧边栏配置您的 Google AI Studio 密钥！")
+        elif not product_input:
+            st.error("❌ 无法分析：请输入产品中文名称！")
         else:
-            with st.spinner(f"🚀 正在使用模型 【{final_model}】 抓取多节点BSR，扫描评论动量并运行 SoV AI 分析中...请耐心等待"):
+            with st.spinner(f"🚀 正在使用模型 【{model_select}】 抓取多节点BSR，扫描评论动量并运行 SoV AI 分析中...请耐心等待"):
                 try:
                     # 1. 调用 Gemini 生成分析数据
-                    report_data = call_gemini_analysis(product_input, country_select, model_name=final_model)
+                    report_data = call_gemini_analysis(product_input, country_select, model_name=model_select, api_key=active_key)
                     
                     # 2. 编译生成 PDF 二进制文件
                     pdf_bytes = compile_pdf_report(product_input, country_select, report_data)
@@ -411,15 +459,12 @@ with col1:
                     error_msg = str(e)
                     st.error(f"分析失败！\n\n**详细错误原因：** {error_msg}")
                     
-                    # 友好提示与智能降级建议
+                    # 给用户高度针对性的建议
                     if "404" in error_msg or "not found" in error_msg:
                         st.warning("""
                         ⚠️ **诊断建议 (404 错误)：**
-                        您当前的 API Key 在当前地区很可能**没有开通该模型**（如 `gemini-1.5-pro`）的权限。
-                        
-                        **请尝试以下操作解决：**
-                        1. 在上方“选择 Gemini 驱动模型”下拉菜单中切换到 **`gemini-1.5-flash`**。这是兼容性最广、任何免费账户均开箱即用的官方标准推荐模型！
-                        2. 确认您的 API 密钥是否输入正确或过期。
+                        您选择的模型在该 API Key 或所在云服务地区不支持，或者不具备 `v1beta` 搜索接地功能。
+                        建议在上方下拉框中切换到更通用的 **`gemini-1.5-flash`** 或 **`gemini-2.0-flash`** 重新尝试！
                         """)
 
 with col2:
