@@ -4,8 +4,9 @@ import os
 import json
 import sqlite3
 from datetime import datetime
+import importlib.metadata
 
-# PDF 生成相关库
+# PDF 生成相关库 (ReportLab 工业级排版引擎)
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -18,7 +19,37 @@ from reportlab.pdfgen import canvas
 import google.generativeai as genai
 
 # ==========================================
-# 1. 初始化 CJK 中文字体与数据库
+# 0. 运行时第三方依赖包版本探测器 (新增调试核心)
+# ==========================================
+def get_library_versions():
+    """
+    动态检测当前运行环境中加载的第三方包真实版本，防范云端缓存导致的版本滞后
+    """
+    packages = ["streamlit", "google-generativeai", "reportlab", "protobuf", "pypdf"]
+    versions = {}
+    for pkg in packages:
+        try:
+            versions[pkg] = importlib.metadata.version(pkg)
+        except Exception:
+            # 兼容：如果 importlib 无法捕获，使用模块内置魔术属性兜底
+            if pkg == "protobuf":
+                try:
+                    import google.protobuf
+                    versions[pkg] = google.protobuf.__version__
+                except Exception:
+                    versions[pkg] = "未检出"
+            elif pkg == "google-generativeai":
+                try:
+                    import google.generativeai as genai_module
+                    versions[pkg] = genai_module.__version__
+                except Exception:
+                    versions[pkg] = "未检出"
+            else:
+                versions[pkg] = "未检出"
+    return versions
+
+# ==========================================
+# 1. 初始化中文字体与本地数据库
 # ==========================================
 try:
     pdfmetrics.registerFont(UnicodeCIDFont('STSong-Light'))
@@ -28,7 +59,7 @@ except Exception as e:
 DB_FILE = "market_reports.db"
 
 def init_db():
-    """初始化本地 SQLite 数据库，创建报告历史表"""
+    """初始化本地 SQLite 数据库，用于持久化 PDF 报告"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute('''
@@ -47,7 +78,7 @@ def init_db():
 init_db()
 
 # ==========================================
-# 2. ReportLab 自动页码画布 (NumberedCanvas)
+# 2. ReportLab 自动页码与高保真页眉页脚 (NumberedCanvas)
 # ==========================================
 class NumberedCanvas(canvas.Canvas):
     def __init__(self, *args, **kwargs):
@@ -68,7 +99,7 @@ class NumberedCanvas(canvas.Canvas):
 
     def draw_decorations(self, page_count):
         if self._pageNumber == 1:
-            # 封面页绘制左侧深蓝修饰条
+            # 封面页绘制左侧深蓝高端修饰条
             self.saveState()
             self.setFillColor(colors.HexColor('#1B365D'))
             self.rect(0, 0, 15, 841.89, fill=True, stroke=False)
@@ -79,13 +110,13 @@ class NumberedCanvas(canvas.Canvas):
         self.setFont("STSong-Light", 8.5)
         self.setFillColor(colors.HexColor('#64748B'))
 
-        # 页眉分割线与标题
+        # 页眉分割线与系统标题
         self.drawString(54, 785, "亚马逊跨国市场智能研究报告中心")
         self.setStrokeColor(colors.HexColor('#CBD5E1'))
         self.setLineWidth(0.5)
         self.line(54, 775, 541.27, 775)
 
-        # 页脚页码与保密声明
+        # 页脚页码与行业保密声明
         page_text = f"第 {self._pageNumber} 页 / 共 {page_count} 页"
         self.drawRightString(541.27, 40, page_text)
         self.drawString(54, 40, "系统自动生成报告 | 跨境电商 AI 智能决策中心")
@@ -94,10 +125,10 @@ class NumberedCanvas(canvas.Canvas):
         self.restoreState()
 
 # ==========================================
-# 3. 核心功能：PDF 报告编译引擎
+# 3. 核心功能：PDF 出版级报告编译引擎
 # ==========================================
 def compile_pdf_report(product, country, data):
-    """根据 Gemini 生成的结构化数据，使用 ReportLab 编译高保真 PDF"""
+    """动态解析 AI 结构化 JSON 并通过 ReportLab 渲染为高保真 PDF 字节流"""
     os.makedirs("/tmp", exist_ok=True)
     filename = f"/tmp/{product}_{country}_report.pdf"
     doc = SimpleDocTemplate(
@@ -111,7 +142,7 @@ def compile_pdf_report(product, country, data):
 
     story = []
     
-    # 样式表定义
+    # 样式表精细定义
     cover_title_style = ParagraphStyle('CoverTitle', fontName='STSong-Light', fontSize=22, leading=28, alignment=1, textColor=colors.white)
     cover_subtitle_style = ParagraphStyle('CoverSubtitle', fontName='STSong-Light', fontSize=12, leading=18, alignment=1, textColor=colors.HexColor('#475569'), spaceBefore=25, spaceAfter=140)
     cover_meta_style = ParagraphStyle('CoverMeta', fontName='STSong-Light', fontSize=10, leading=16, alignment=1, textColor=colors.HexColor('#64748B'))
@@ -155,7 +186,7 @@ def compile_pdf_report(product, country, data):
     # --- 第二部分：Top 10 品牌表格 ---
     story.append(Paragraph(f"第二部分：【{country}】市场 Top 10 品牌深度剖析", h1_style))
     
-    # 构建表格数据
+    # 动态填入 Top 10 表格数据
     table_content = [
         [
             Paragraph("<b>排名</b>", cell_header_style),
@@ -242,67 +273,20 @@ def compile_pdf_report(product, country, data):
     return pdf_bytes
 
 # ==========================================
-# 4. 运行时 SDK 工具支持探针 (SDK 原生态测试法)
-# ==========================================
-def check_sdk_tool_support():
-    """
-    通过 SDK 自身的序列化机制，动态测试当前安装的 google-generativeai 是否支持对应的搜索工具字段。
-    这是最安全、最稳妥且与 SDK 版本解耦的动态探针，完全避免了去反射读取底层 Protobuf 描述符。
-    """
-    supports_retrieval = False
-    supports_search = False
-    
-    # 1. 尝试静态实例化测试支持情况 (不消耗 API Key、无网络开销)
-    try:
-        genai.GenerativeModel(model_name="gemini-1.5-flash", tools=[{"google_search_retrieval": {}}])
-        supports_retrieval = True
-    except Exception:
-        pass
-        
-    # 2. 尝试静态实例化新版 google_search 工具
-    try:
-        genai.GenerativeModel(model_name="gemini-1.5-flash", tools=[{"google_search": {}}])
-        supports_search = True
-    except Exception:
-        pass
-        
-    return supports_retrieval, supports_search
-
-# ==========================================
-# 5. 智能大脑：Gemini 市场结构化扫描器
+# 5. 2.0+ 现代大脑：Gemini 市场结构化扫描器
 # ==========================================
 def call_gemini_analysis(product, country, model_name, api_key):
     """
-    【自适应双通道安全版】调用 Gemini 完成谷歌接地分析。
-    结合 check_sdk_tool_support 原生态探针，彻底防崩溃。
+    【2.0+时代专用版】直连 Google 官方标准 'google_search' 实现在线接地。
+    要求 google-generativeai>=0.8.3。抛弃所有历史包袱。
     """
     if not api_key:
         raise ValueError("未配置有效的 GEMINI_API_KEY，请在侧边栏或 Secrets 中进行配置。")
         
     genai.configure(api_key=api_key)
 
-    # 1. 动态检测 SDK 本地真实支持情况
-    supports_retrieval, supports_search = check_sdk_tool_support()
-
-    # 2. 根据模型代际及本地 SDK 的硬性能力决定传参，安全防崩溃
-    tools_config = []
-    if "1.5" in model_name:
-        if supports_retrieval:
-            tools_config = [{"google_search_retrieval": {}}]
-    else:
-        # 2.0 / 2.5 / 3.0+ 模型
-        if supports_search:
-            tools_config = [{"google_search": {}}]
-        else:
-            # SDK 太旧，本地无 google_search 字段，如果强行初始化必报 FunctionDeclaration 错误。
-            # 此时优雅中断，给用户最直接的中文指导方案：
-            raise ValueError(
-                f"您选择的模型【{model_name}】需要新版谷歌搜索工具（google_search），"
-                f"但当前运行环境中安装的 google-generativeai SDK 版本过低，本地无法解析此属性。\n\n"
-                f"💡 **解决方法（二选一）：**\n"
-                f"1. **升级依赖**：修改您的 **`requirements.txt`**，将 google-generativeai 版本指定为 `google-generativeai>=0.8.3`，然后提交并重新部署。\n"
-                f"2. **快速运行**：在左侧下拉菜单中，将模型切换回高兼容性的 **`gemini-1.5-flash`**，它支持旧版工具，无需升级即可直接运行！"
-            )
+    # 1. 2.0+ 世代模型统一使用最新标准工具接口，格式必须为 list of dict，防客户端拦截报错
+    tools_config = [{"google_search": {}}]
 
     prompt = f"""
     请你首先使用 google_search 工具，在互联网上实时检索亚马逊【{country}】站点关于【{product}】类目的最新 BSR（Best Sellers）榜单、2026最新品牌数据。
@@ -310,7 +294,7 @@ def call_gemini_analysis(product, country, model_name, api_key):
     重点关注：
     - 该国市场该类目前10名最活跃、销量最高、或评论累计最多的真实品牌。
     - 针对这些品牌的真实核心产品线、目标人群进行整合。
-    - 检索该国（如欧洲/日本/美国）对于该产品特殊的环保合规政策、消费者对材质/设计本土化的真实偏好（例如德国对 OEKO-TEX、现代简约风的偏好）。
+    - 检索该国对于该产品特殊的环保合规政策、消费者对材质/设计本土化的真实偏好。
     
     数据检索完毕后，严格按照以下 JSON 模式（Schema）输出，禁止包含任何 markdown 标记（如 ```json），只输出纯 JSON 字符串：
     {{
@@ -355,11 +339,10 @@ def call_gemini_analysis(product, country, model_name, api_key):
     }}
     """
     
-    clean_text = ""
-    # 使用检测出来的安全 tools 结构配置初始化
+    # 2. 直接实例化 2.x/2.5 模型并调用
     model = genai.GenerativeModel(
         model_name=model_name,
-        tools=tools_config if len(tools_config) > 0 else None
+        tools=tools_config
     )
     response = model.generate_content(prompt)
     clean_text = response.text.strip()
@@ -373,18 +356,18 @@ def call_gemini_analysis(product, country, model_name, api_key):
     return json.loads(clean_text)
 
 # ==========================================
-# 6. 动态获取可用模型
+# 6. 动态获取可用模型 (自动过滤老旧 1.x 代模型)
 # ==========================================
 def get_available_models(api_key):
     """
     根据当前的 API Key，动态调用 Google list_models 接口获取真实的可用模型。
-    若获取失败或未配 Key，则降级返回内置精选稳定模型。
+    自动过滤掉 1.0、1.5 等老旧历史模型，只呈现 2.0+ / 2.5 / 3.0+ 等现代高智能模型。
     """
+    # 2.0+ 时代默认精选高能模型
     fallback_models = [
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-2.0-flash",
-        "gemini-2.5-pro"
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash"
     ]
     if not api_key:
         return fallback_models
@@ -395,12 +378,14 @@ def get_available_models(api_key):
         for m in raw_models:
             if 'generateContent' in m.supported_generation_methods:
                 model_id = m.name.replace("models/", "")
-                if "gemini" in model_id.lower():
+                # 排除 1.0, 1.5 系列，保留 2.0 及更高代际
+                if "gemini" in model_id.lower() and not any(v in model_id for v in ["1.0", "1.5"]):
                     valid_models.append(model_id)
         
         if valid_models:
             valid_models.sort()
-            primary_recommends = ["gemini-1.5-flash", "gemini-2.0-flash"]
+            # 优先推荐 2.5 系列
+            primary_recommends = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"]
             for rec in reversed(primary_recommends):
                 if rec in valid_models:
                     valid_models.remove(rec)
@@ -415,10 +400,10 @@ def get_available_models(api_key):
 # ==========================================
 st.set_page_config(page_title="亚马逊多国市场品牌智能分析系统", layout="wide")
 
-st.title("🛡️ 2026 亚马逊跨国市场 brand 智能分析系统 (自适应完美版)")
+st.title("🛡️ 2026 亚马逊跨国市场 brand 智能分析系统 (Gemini 2.x/2.5+ 重构版)")
 st.write("输入任意品类与目的国商城，一键启动 AI 级多维度 BSR 评论动量模型评估，并直接编译为**出版级 PDF 报告**。")
 
-# --- 侧边栏：API 凭证与动态模型感知 ---
+# --- 侧边栏：API 凭证、动态模型感知与环境诊断 ---
 with st.sidebar:
     st.header("🔑 API 凭证与模型状态")
     
@@ -436,14 +421,28 @@ with st.sidebar:
     if active_key:
         st.success("🟢 API 密钥已就绪")
         
-        with st.spinner("🔄 正在动态扫描您账户权限内的 Gemini 模型列表..."):
+        with st.spinner("🔄 正在动态扫描您账户权限内的 Gemini 2.x+ 模型列表..."):
             available_models = get_available_models(active_key)
             
         st.caption("✨ **已动态读取以下可用模型：**")
         st.code("\n".join(available_models[:12]) + ("\n..." if len(available_models) > 12 else ""))
     else:
         st.error("🔴 未检测到有效的 API 密钥，请在上方输入或部署 Secrets。")
-        available_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.5-pro"]
+        available_models = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
+
+    # ------------------ 新增：动态包版本调试面板 ------------------
+    st.divider()
+    with st.expander("⚙️ 运行时第三方库版本诊断"):
+        st.caption("以下为云端服务器当前实际加载的依赖版本，可用于快速排除 Protobuf 校验冲突。")
+        runtime_versions = get_library_versions()
+        for pkg_name, pkg_ver in runtime_versions.items():
+            # 特殊标注出 google-generativeai，如果低于 0.8.3 将发出黄色警告提示
+            if pkg_name == "google-generativeai":
+                if pkg_ver != "未检出" and pkg_ver < "0.8.3":
+                    st.warning(f"⚠️ **{pkg_name}**: `{pkg_ver}` (建议 >=0.8.3)")
+                    continue
+            st.write(f"🔹 **{pkg_name}**: `{pkg_ver}`")
+    # -------------------------------------------------------------
 
 st.divider()
 
@@ -460,9 +459,9 @@ with col1:
         )
         
         model_select = st.selectbox(
-            "选择已授权的 Gemini 驱动模型：",
+            "选择已授权的 Gemini 2.x/2.5+ 驱动模型：",
             options=available_models,
-            help="此处的列表是由您的 API Key 权限实时动态拉取的。"
+            help="此处的列表是由您的 API Key 权限实时动态拉取的最新一代模型。"
         )
         
         submit_btn = st.form_submit_button("📊 运行智能分析 & 生成PDF")
