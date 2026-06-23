@@ -86,7 +86,7 @@ class NumberedCanvas(canvas.Canvas):
         self.line(54, 775, 541.27, 775)
 
         # 页脚页码与保密声明
-        page_text = f"get_bytes_第 {self._pageNumber} 页 / 共 {page_count} 页"
+        page_text = f"第 {self._pageNumber} 页 / 共 {page_count} 页"
         self.drawRightString(541.27, 40, page_text)
         self.drawString(54, 40, "系统自动生成报告 | 跨境电商 AI 智能决策中心")
         self.line(54, 52, 541.27, 52)
@@ -242,28 +242,30 @@ def compile_pdf_report(product, country, data):
     return pdf_bytes
 
 # ==========================================
-# 4. 运行时 SDK 工具支持探针 (防御性编程核心)
+# 4. 运行时 SDK 工具支持探针 (SDK 原生态测试法)
 # ==========================================
 def check_sdk_tool_support():
     """
-    动态检测当前运行环境中安装的 google-generativeai SDK 的功能支持情况。
-    避免因依赖版本缓存导致客户端序列化异常。
-    返回: (supports_retrieval, supports_search)
+    通过 SDK 自身的序列化机制，动态测试当前安装的 google-generativeai 是否支持对应的搜索工具字段。
+    这是最安全、最稳妥且与 SDK 版本解耦的动态探针，完全避免了去反射读取底层 Protobuf 描述符。
     """
     supports_retrieval = False
     supports_search = False
+    
+    # 1. 尝试静态实例化测试支持情况 (不消耗 API Key、无网络开销)
     try:
-        import google.ai.generativelanguage as generativelanguage
-        fields = generativelanguage.Tool.DESCRIPTOR.fields_by_name
-        supports_retrieval = "google_search_retrieval" in fields
-        supports_search = "google_search" in fields
+        genai.GenerativeModel(model_name="gemini-1.5-flash", tools=[{"google_search_retrieval": {}}])
+        supports_retrieval = True
     except Exception:
-        try:
-            fields = genai.protos.Tool.DESCRIPTOR.fields_by_name
-            supports_retrieval = "google_search_retrieval" in fields
-            supports_search = "google_search" in fields
-        except Exception:
-            pass
+        pass
+        
+    # 2. 尝试静态实例化新版 google_search 工具
+    try:
+        genai.GenerativeModel(model_name="gemini-1.5-flash", tools=[{"google_search": {}}])
+        supports_search = True
+    except Exception:
+        pass
+        
     return supports_retrieval, supports_search
 
 # ==========================================
@@ -272,14 +274,14 @@ def check_sdk_tool_support():
 def call_gemini_analysis(product, country, model_name, api_key):
     """
     【自适应双通道安全版】调用 Gemini 完成谷歌接地分析。
-    结合 check_sdk_tool_support 检测本地 proto 字典，杜绝 FunctionDeclaration 校验崩溃。
+    结合 check_sdk_tool_support 原生态探针，彻底防崩溃。
     """
     if not api_key:
         raise ValueError("未配置有效的 GEMINI_API_KEY，请在侧边栏或 Secrets 中进行配置。")
         
     genai.configure(api_key=api_key)
 
-    # 1. 动态检测 SDK 本地支持情况
+    # 1. 动态检测 SDK 本地真实支持情况
     supports_retrieval, supports_search = check_sdk_tool_support()
 
     # 2. 根据模型代际及本地 SDK 的硬性能力决定传参，安全防崩溃
