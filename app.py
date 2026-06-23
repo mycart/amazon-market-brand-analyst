@@ -86,7 +86,7 @@ class NumberedCanvas(canvas.Canvas):
         self.line(54, 775, 541.27, 775)
 
         # 页脚页码与保密声明
-        page_text = f"第 {self._pageNumber} 页 / 共 {page_count} 页"
+        page_text = f"get_bytes_第 {self._pageNumber} 页 / 共 {page_count} 页"
         self.drawRightString(541.27, 40, page_text)
         self.drawString(54, 40, "系统自动生成报告 | 跨境电商 AI 智能决策中心")
         self.line(54, 52, 541.27, 52)
@@ -242,35 +242,72 @@ def compile_pdf_report(product, country, data):
     return pdf_bytes
 
 # ==========================================
-# 4. 智能大脑：Gemini 市场结构化扫描器 (支持双版本工具自适应降级)
+# 4. 运行时 SDK 工具支持探针 (防御性编程核心)
+# ==========================================
+def check_sdk_tool_support():
+    """
+    动态检测当前运行环境中安装的 google-generativeai SDK 的功能支持情况。
+    避免因依赖版本缓存导致客户端序列化异常。
+    返回: (supports_retrieval, supports_search)
+    """
+    supports_retrieval = False
+    supports_search = False
+    try:
+        import google.ai.generativelanguage as generativelanguage
+        fields = generativelanguage.Tool.DESCRIPTOR.fields_by_name
+        supports_retrieval = "google_search_retrieval" in fields
+        supports_search = "google_search" in fields
+    except Exception:
+        try:
+            fields = genai.protos.Tool.DESCRIPTOR.fields_by_name
+            supports_retrieval = "google_search_retrieval" in fields
+            supports_search = "google_search" in fields
+        except Exception:
+            pass
+    return supports_retrieval, supports_search
+
+# ==========================================
+# 5. 智能大脑：Gemini 市场结构化扫描器
 # ==========================================
 def call_gemini_analysis(product, country, model_name, api_key):
     """
-    【自适应双通道版】调用 Gemini 完成谷歌接地分析
-    自动检测/适配 "google_search" 与 "google_search_retrieval" 工具格式，
-    采用列表/字典格式传参，彻底规避 'The only string that can be passed as a tool is 'code_execution'.' 报错。
+    【自适应双通道安全版】调用 Gemini 完成谷歌接地分析。
+    结合 check_sdk_tool_support 检测本地 proto 字典，杜绝 FunctionDeclaration 校验崩溃。
     """
     if not api_key:
         raise ValueError("未配置有效的 GEMINI_API_KEY，请在侧边栏或 Secrets 中进行配置。")
         
     genai.configure(api_key=api_key)
 
-    # 核心技术改进：
-    # 为了防止 SDK 触发 isinstance(tools, str) 的 client-side 严格校验限制，
-    # 我们绝对不能将工具传为 string 类型。必须将其封装为 list of dicts 格式！
-    # 1.5 系列默认初始化使用 [{"google_search_retrieval": {}}]
-    # 2.0/2.5/3.0+ 系列默认初始化使用 [{"google_search": {}}]
+    # 1. 动态检测 SDK 本地支持情况
+    supports_retrieval, supports_search = check_sdk_tool_support()
+
+    # 2. 根据模型代际及本地 SDK 的硬性能力决定传参，安全防崩溃
+    tools_config = []
     if "1.5" in model_name:
-        tools_config = [{"google_search_retrieval": {}}]
+        if supports_retrieval:
+            tools_config = [{"google_search_retrieval": {}}]
     else:
-        tools_config = [{"google_search": {}}]
+        # 2.0 / 2.5 / 3.0+ 模型
+        if supports_search:
+            tools_config = [{"google_search": {}}]
+        else:
+            # SDK 太旧，本地无 google_search 字段，如果强行初始化必报 FunctionDeclaration 错误。
+            # 此时优雅中断，给用户最直接的中文指导方案：
+            raise ValueError(
+                f"您选择的模型【{model_name}】需要新版谷歌搜索工具（google_search），"
+                f"但当前运行环境中安装的 google-generativeai SDK 版本过低，本地无法解析此属性。\n\n"
+                f"💡 **解决方法（二选一）：**\n"
+                f"1. **升级依赖**：修改您的 **`requirements.txt`**，将 google-generativeai 版本指定为 `google-generativeai>=0.8.3`，然后提交并重新部署。\n"
+                f"2. **快速运行**：在左侧下拉菜单中，将模型切换回高兼容性的 **`gemini-1.5-flash`**，它支持旧版工具，无需升级即可直接运行！"
+            )
 
     prompt = f"""
     请你首先使用 google_search 工具，在互联网上实时检索亚马逊【{country}】站点关于【{product}】类目的最新 BSR（Best Sellers）榜单、2026最新品牌数据。
     
     重点关注：
     - 该国市场该类目前10名最活跃、销量最高、或评论累计最多的真实品牌。
-    - 针对 these 品牌的真实核心产品线、目标人群进行整合。
+    - 针对这些品牌的真实核心产品线、目标人群进行整合。
     - 检索该国（如欧洲/日本/美国）对于该产品特殊的环保合规政策、消费者对材质/设计本土化的真实偏好（例如德国对 OEKO-TEX、现代简约风的偏好）。
     
     数据检索完毕后，严格按照以下 JSON 模式（Schema）输出，禁止包含任何 markdown 标记（如 ```json），只输出纯 JSON 字符串：
@@ -317,55 +354,13 @@ def call_gemini_analysis(product, country, model_name, api_key):
     """
     
     clean_text = ""
-    try:
-        # 第一阶段：尝试用首选工具配置初始化并生成
-        model = genai.GenerativeModel(
-            model_name=model_name,
-            tools=tools_config
-        )
-        response = model.generate_content(prompt)
-        clean_text = response.text.strip()
-    except Exception as e:
-        error_msg = str(e)
-        
-        # 第二阶段：智能容错重试。如果后端提示版本/工具名不匹配：
-        if "google_search_retrieval is not supported" in error_msg or "Please use google_search tool instead" in error_msg:
-            try:
-                # 切换为新一代官方标准 list 格式: [{"google_search": {}}] 重试
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    tools=[{"google_search": {}}]
-                )
-                response = model.generate_content(prompt)
-                clean_text = response.text.strip()
-            except Exception as inner_e:
-                # 若还报错，尝试切换为旧一代官方标准 list 格式: [{"google_search_retrieval": {}}]
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    tools=[{"google_search_retrieval": {}}]
-                )
-                response = model.generate_content(prompt)
-                clean_text = response.text.strip()
-        elif "google_search is not supported" in error_msg or "google_search_retrieval" in error_msg:
-            try:
-                # 切换为旧一代官方标准 list 格式: [{"google_search_retrieval": {}}] 重试
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    tools=[{"google_search_retrieval": {}}]
-                )
-                response = model.generate_content(prompt)
-                clean_text = response.text.strip()
-            except Exception as inner_e:
-                # 若还报错，尝试切换为新一代官方标准 list 格式: [{"google_search": {}}]
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    tools=[{"google_search": {}}]
-                )
-                response = model.generate_content(prompt)
-                clean_text = response.text.strip()
-        else:
-            # 如果是其他底层错误（如 API key 错误等），向上抛出
-            raise e
+    # 使用检测出来的安全 tools 结构配置初始化
+    model = genai.GenerativeModel(
+        model_name=model_name,
+        tools=tools_config if len(tools_config) > 0 else None
+    )
+    response = model.generate_content(prompt)
+    clean_text = response.text.strip()
             
     # 解析并验证返回内容是否为合格 JSON
     if clean_text.startswith("```"):
@@ -376,14 +371,13 @@ def call_gemini_analysis(product, country, model_name, api_key):
     return json.loads(clean_text)
 
 # ==========================================
-# 5. 动态获取可用模型
+# 6. 动态获取可用模型
 # ==========================================
 def get_available_models(api_key):
     """
     根据当前的 API Key，动态调用 Google list_models 接口获取真实的可用模型。
     若获取失败或未配 Key，则降级返回内置精选稳定模型。
     """
-    # 默认备份模型列表 (如果 API Key 无效或无法连通)
     fallback_models = [
         "gemini-1.5-flash",
         "gemini-1.5-pro",
@@ -397,15 +391,12 @@ def get_available_models(api_key):
         raw_models = genai.list_models()
         valid_models = []
         for m in raw_models:
-            # 过滤必须支持 generateContent 方法的模型
             if 'generateContent' in m.supported_generation_methods:
                 model_id = m.name.replace("models/", "")
-                # 过滤出包含 'gemini' 的模型
                 if "gemini" in model_id.lower():
                     valid_models.append(model_id)
         
         if valid_models:
-            # 排序整理，让推荐的 flash 放在第一位，体验最佳
             valid_models.sort()
             primary_recommends = ["gemini-1.5-flash", "gemini-2.0-flash"]
             for rec in reversed(primary_recommends):
@@ -418,7 +409,7 @@ def get_available_models(api_key):
     return fallback_models
 
 # ==========================================
-# 6. Streamlit GUI 交互控制台
+# 7. Streamlit GUI 交互控制台
 # ==========================================
 st.set_page_config(page_title="亚马逊多国市场品牌智能分析系统", layout="wide")
 
@@ -429,14 +420,13 @@ st.write("输入任意品类与目的国商城，一键启动 AI 级多维度 BS
 with st.sidebar:
     st.header("🔑 API 凭证与模型状态")
     
-    # 获取默认 Key (从 Secrets 或 环境变量)
     default_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
     
     api_key_input = st.text_input(
         "请输入您的 Google AI Studio API Key：",
         value=default_key,
         type="password",
-        help="建议配置在 Streamlit Secrets 中。若此处输入，将优先使用此处配置。"
+        help="建议配置在 Streamlit Secrets 中。"
     )
     
     active_key = api_key_input.strip() if api_key_input else ""
@@ -444,11 +434,10 @@ with st.sidebar:
     if active_key:
         st.success("🟢 API 密钥已就绪")
         
-        # 动态获取可用模型
         with st.spinner("🔄 正在动态扫描您账户权限内的 Gemini 模型列表..."):
             available_models = get_available_models(active_key)
             
-        st.caption("✨ **已成功从您的 API Key 中动态读取以下可用模型：**")
+        st.caption("✨ **已动态读取以下可用模型：**")
         st.code("\n".join(available_models[:12]) + ("\n..." if len(available_models) > 12 else ""))
     else:
         st.error("🔴 未检测到有效的 API 密钥，请在上方输入或部署 Secrets。")
@@ -462,36 +451,31 @@ with col1:
     st.header("🔍 新建市场分析")
     
     with st.form("analysis_form"):
-        product_input = st.text_input("产品中文名称：", value="狗床", help="例如：狗床、猫爬架、喂食器等")
+        product_input = st.text_input("产品中文名称：", value="狗床", help="例如：狗床、猫爬架等")
         country_select = st.selectbox(
             "选择亚马逊目的国商城：",
             ["德国 (Amazon DE)", "美国 (Amazon US)", "日本 (Amazon JP)", "英国 (Amazon UK)", "法国 (Amazon FR)", "意大利 (Amazon IT)"]
         )
         
-        # 核心需求：下拉选择框的数据由动态获取的 available_models 直接填充！
         model_select = st.selectbox(
             "选择已授权的 Gemini 驱动模型：",
             options=available_models,
-            help="此处的列表是由您的 API Key 权限实时动态拉取的，确保 100% 具备访问权限，避免 404 报错。"
+            help="此处的列表是由您的 API Key 权限实时动态拉取的。"
         )
         
         submit_btn = st.form_submit_button("📊 运行智能分析 & 生成PDF")
         
     if submit_btn:
         if not active_key:
-            st.error("❌ 无法分析：侧边栏未检测到 API 密钥，请在侧边栏配置您的 Google AI Studio 密钥！")
+            st.error("❌ 无法分析：侧边栏未检测到 API 密钥，请配置！")
         elif not product_input:
             st.error("❌ 无法分析：请输入产品中文名称！")
         else:
             with st.spinner(f"🚀 正在使用模型 【{model_select}】 抓取多节点BSR，扫描评论动量并运行 SoV AI 分析中...请耐心等待"):
                 try:
-                    # 1. 调用 Gemini 生成分析数据
                     report_data = call_gemini_analysis(product_input, country_select, model_name=model_select, api_key=active_key)
-                    
-                    # 2. 编译生成 PDF 二进制文件
                     pdf_bytes = compile_pdf_report(product_input, country_select, report_data)
                     
-                    # 3. 写入 SQLite 数据库归档
                     conn = sqlite3.connect(DB_FILE)
                     cursor = conn.cursor()
                     cursor.execute(
@@ -503,7 +487,6 @@ with col1:
                     
                     st.success(f"🎉 报告生成并归档成功！品类：{product_input} | 商城：{country_select}")
                     
-                    # 4. 立即提供下载
                     st.download_button(
                         label=f"⬇️ 立即下载报告 PDF",
                         data=pdf_bytes,
@@ -512,20 +495,11 @@ with col1:
                     )
                 except Exception as e:
                     error_msg = str(e)
-                    st.error(f"分析失败！\n\n**详细错误原因：** {error_msg}")
-                    
-                    # 给用户高度针对性的建议
-                    if "404" in error_msg or "not found" in error_msg:
-                        st.warning("""
-                        ⚠️ **诊断建议 (404 错误)：**
-                        您选择的模型在该 API Key 或所在云服务地区不支持，或者不具备搜索接地功能。
-                        建议在上方下拉框中切换到更通用的 **`gemini-1.5-flash`** 或 **`gemini-2.0-flash`** 重新尝试！
-                        """)
+                    st.error(f"分析失败！\n\n**错误信息：** {error_msg}")
 
 with col2:
     st.header("🗂️ 历史分析报告归档（随时下载）")
     
-    # 每次刷新从 SQLite 读取历史数据
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT id, product_name, country, created_at FROM reports ORDER BY id DESC")
@@ -535,7 +509,6 @@ with col2:
     if not rows:
         st.info("暂无历史分析记录。请在左侧输入内容并点击“运行智能分析”。")
     else:
-        # 以精美的表格列表 and 下载按钮组展示
         for row in rows:
             rep_id, prod, country, t_stamp = row
             col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
@@ -544,7 +517,6 @@ with col2:
             with col_b2:
                 st.caption(f"⏱️ {t_stamp}")
             with col_b3:
-                # 重新从数据库提取 PDF 二进制
                 def get_bytes(r_id):
                     conn = sqlite3.connect(DB_FILE)
                     cursor = conn.cursor()
