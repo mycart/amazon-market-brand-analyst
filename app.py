@@ -247,26 +247,30 @@ def compile_pdf_report(product, country, data):
 def call_gemini_analysis(product, country, model_name, api_key):
     """
     【自适应双通道版】调用 Gemini 完成谷歌接地分析
-    自动检测/适配 "google_search" 与 "google_search_retrieval" 工具名，确保任何模型皆可100%成功。
+    自动检测/适配 "google_search" 与 "google_search_retrieval" 工具格式，
+    采用列表/字典格式传参，彻底规避 'The only string that can be passed as a tool is 'code_execution'.' 报错。
     """
     if not api_key:
         raise ValueError("未配置有效的 GEMINI_API_KEY，请在侧边栏或 Secrets 中进行配置。")
         
     genai.configure(api_key=api_key)
 
-    # 确定初始工具名：新一代模型（如 gemini-2.5-pro 等）默认使用新版官方工具名 "google_search"
-    # 只有旧版 1.5 系列可能在某些特定 SDK 环境下要求 "google_search_retrieval"
+    # 核心技术改进：
+    # 为了防止 SDK 触发 isinstance(tools, str) 的 client-side 严格校验限制，
+    # 我们绝对不能将工具传为 string 类型。必须将其封装为 list of dicts 格式！
+    # 1.5 系列默认初始化使用 [{"google_search_retrieval": {}}]
+    # 2.0/2.5/3.0+ 系列默认初始化使用 [{"google_search": {}}]
     if "1.5" in model_name:
-        tool_name = "google_search_retrieval"
+        tools_config = [{"google_search_retrieval": {}}]
     else:
-        tool_name = "google_search"
+        tools_config = [{"google_search": {}}]
 
     prompt = f"""
     请你首先使用 google_search 工具，在互联网上实时检索亚马逊【{country}】站点关于【{product}】类目的最新 BSR（Best Sellers）榜单、2026最新品牌数据。
     
     重点关注：
     - 该国市场该类目前10名最活跃、销量最高、或评论累计最多的真实品牌。
-    - 针对这些品牌的真实核心产品线、目标人群进行整合。
+    - 针对 these 品牌的真实核心产品线、目标人群进行整合。
     - 检索该国（如欧洲/日本/美国）对于该产品特殊的环保合规政策、消费者对材质/设计本土化的真实偏好（例如德国对 OEKO-TEX、现代简约风的偏好）。
     
     数据检索完毕后，严格按照以下 JSON 模式（Schema）输出，禁止包含任何 markdown 标记（如 ```json），只输出纯 JSON 字符串：
@@ -314,30 +318,48 @@ def call_gemini_analysis(product, country, model_name, api_key):
     
     clean_text = ""
     try:
-        # 尝试使用首选工具初始化并生成内容
+        # 第一阶段：尝试用首选工具配置初始化并生成
         model = genai.GenerativeModel(
             model_name=model_name,
-            tools=tool_name
+            tools=tools_config
         )
         response = model.generate_content(prompt)
         clean_text = response.text.strip()
     except Exception as e:
         error_msg = str(e)
-        # 智能双通道自适应重试逻辑：
-        if "google_search_retrieval is not supported" in error_msg or "Please use google_search tool instead" in error_msg or "google_search" in error_msg.lower():
-            # 切换为新一代官方标准工具名 "google_search" 重试
+        
+        # 第二阶段：智能容错重试。如果后端提示版本/工具名不匹配：
+        if "google_search_retrieval is not supported" in error_msg or "Please use google_search tool instead" in error_msg:
             try:
+                # 切换为新一代官方标准 list 格式: [{"google_search": {}}] 重试
                 model = genai.GenerativeModel(
                     model_name=model_name,
-                    tools="google_search"
+                    tools=[{"google_search": {}}]
                 )
                 response = model.generate_content(prompt)
                 clean_text = response.text.strip()
             except Exception as inner_e:
-                # 若还报错，尝试切换为旧一代 "google_search_retrieval"
+                # 若还报错，尝试切换为旧一代官方标准 list 格式: [{"google_search_retrieval": {}}]
                 model = genai.GenerativeModel(
                     model_name=model_name,
-                    tools="google_search_retrieval"
+                    tools=[{"google_search_retrieval": {}}]
+                )
+                response = model.generate_content(prompt)
+                clean_text = response.text.strip()
+        elif "google_search is not supported" in error_msg or "google_search_retrieval" in error_msg:
+            try:
+                # 切换为旧一代官方标准 list 格式: [{"google_search_retrieval": {}}] 重试
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    tools=[{"google_search_retrieval": {}}]
+                )
+                response = model.generate_content(prompt)
+                clean_text = response.text.strip()
+            except Exception as inner_e:
+                # 若还报错，尝试切换为新一代官方标准 list 格式: [{"google_search": {}}]
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    tools=[{"google_search": {}}]
                 )
                 response = model.generate_content(prompt)
                 clean_text = response.text.strip()
@@ -400,14 +422,14 @@ def get_available_models(api_key):
 # ==========================================
 st.set_page_config(page_title="亚马逊多国市场品牌智能分析系统", layout="wide")
 
-st.title("🛡️ 2026 亚马逊跨国市场品牌科学分析系统 (API 级自适应版)")
+st.title("🛡️ 2026 亚马逊跨国市场 brand 智能分析系统 (自适应完美版)")
 st.write("输入任意品类与目的国商城，一键启动 AI 级多维度 BSR 评论动量模型评估，并直接编译为**出版级 PDF 报告**。")
 
 # --- 侧边栏：API 凭证与动态模型感知 ---
 with st.sidebar:
     st.header("🔑 API 凭证与模型状态")
     
-    # 获取默认 Key (从 Secrets 或 环境 变量)
+    # 获取默认 Key (从 Secrets 或 环境变量)
     default_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
     
     api_key_input = st.text_input(
