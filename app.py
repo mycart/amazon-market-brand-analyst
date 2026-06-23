@@ -256,10 +256,10 @@ def call_gemini_analysis(product, country):
     else:
         genai.configure(api_key=api_key)
 
-    # 核心：在模型初始化时，注入 Google Search 作为辅助工具
+    # 核心修正：在 google-generativeai SDK 中，启用 Google 搜索接地的正确字符串名称是 "google_search_retrieval"
     model = genai.GenerativeModel(
         model_name="gemini-1.5-pro",
-        tools="google_search"  # 开启原生谷歌搜索接地功能！
+        tools="google_search_retrieval"  # 已经修正为 SDK 官方支持的标准接地工具名！
     )
     
     prompt = f"""
@@ -391,7 +391,7 @@ with col2:
     if not rows:
         st.info("暂无历史分析记录。请在左侧输入内容并点击“运行智能分析”。")
     else:
-        # 以精美的表格列表和下载按钮组展示
+        # 以精美的表格列表 and 下载按钮组展示
         for row in rows:
             rep_id, prod, country, t_stamp = row
             col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
